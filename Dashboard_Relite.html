@@ -751,8 +751,12 @@ q<!DOCTYPE html>
                         <label><input type="checkbox" id="dashAlarmEnabled"> Dashboard Alarm Sender ON</label>
                     </div>
                     <div>
-                        <label for="dashAlarmRetryCount">Total tries per ON/OFF</label>
-                        <input type="number" id="dashAlarmRetryCount" min="1" max="12" step="1" value="3">
+                        <label for="dashAlarmOnRetryCount">ON total tries</label>
+                        <input type="number" id="dashAlarmOnRetryCount" min="1" max="12" step="1" value="3">
+                    </div>
+                    <div>
+                        <label for="dashAlarmOffRetryCount">OFF total tries</label>
+                        <input type="number" id="dashAlarmOffRetryCount" min="1" max="12" step="1" value="3">
                     </div>
                     <div>
                         <label for="dashAlarmRetryGap">Gap between tries (minutes)</label>
@@ -873,13 +877,14 @@ q<!DOCTYPE html>
         const DASHBOARD_ALARM_SETTINGS_KEY = "relite_dashboard_alarm_settings";
         const dashboardAlarmState = {
             lastTriggerKeyMap: {},
-            pendingRetryTimers: []
+            alarmJobs: {}
         };
 
         function defaultDashboardAlarmSettings() {
             return {
                 enabled: false,
-                retryCount: 3,
+                onRetryCount: 3,
+                offRetryCount: 3,
                 retryGapMinutes: 5
             };
         }
@@ -896,7 +901,8 @@ q<!DOCTYPE html>
                 }
                 return {
                     enabled: parsed.enabled === true,
-                    retryCount: Number.isFinite(Number(parsed.retryCount)) ? Math.max(1, Math.min(12, Number(parsed.retryCount))) : 3,
+                    onRetryCount: Number.isFinite(Number(parsed.onRetryCount)) ? Math.max(1, Math.min(12, Number(parsed.onRetryCount))) : 3,
+                    offRetryCount: Number.isFinite(Number(parsed.offRetryCount)) ? Math.max(1, Math.min(12, Number(parsed.offRetryCount))) : 3,
                     retryGapMinutes: Number.isFinite(Number(parsed.retryGapMinutes)) ? Math.max(1, Math.min(60, Number(parsed.retryGapMinutes))) : 5
                 };
             } catch (err) {
@@ -918,14 +924,18 @@ q<!DOCTYPE html>
         function renderDashboardAlarmSettingsEditor() {
             const settings = loadDashboardAlarmSettings();
             const enabledElem = document.getElementById("dashAlarmEnabled");
-            const retryCountElem = document.getElementById("dashAlarmRetryCount");
+            const onRetryCountElem = document.getElementById("dashAlarmOnRetryCount");
+            const offRetryCountElem = document.getElementById("dashAlarmOffRetryCount");
             const retryGapElem = document.getElementById("dashAlarmRetryGap");
 
             if (enabledElem) {
                 enabledElem.checked = settings.enabled;
             }
-            if (retryCountElem) {
-                retryCountElem.value = String(settings.retryCount);
+            if (onRetryCountElem) {
+                onRetryCountElem.value = String(settings.onRetryCount);
+            }
+            if (offRetryCountElem) {
+                offRetryCountElem.value = String(settings.offRetryCount);
             }
             if (retryGapElem) {
                 retryGapElem.value = String(settings.retryGapMinutes);
@@ -935,16 +945,19 @@ q<!DOCTYPE html>
         function readDashboardAlarmSettingsEditor() {
             const current = loadDashboardAlarmSettings();
             const enabledElem = document.getElementById("dashAlarmEnabled");
-            const retryCountElem = document.getElementById("dashAlarmRetryCount");
+            const onRetryCountElem = document.getElementById("dashAlarmOnRetryCount");
+            const offRetryCountElem = document.getElementById("dashAlarmOffRetryCount");
             const retryGapElem = document.getElementById("dashAlarmRetryGap");
 
             const next = {
                 enabled: enabledElem ? enabledElem.checked : current.enabled,
-                retryCount: retryCountElem ? Number(retryCountElem.value) : current.retryCount,
+                onRetryCount: onRetryCountElem ? Number(onRetryCountElem.value) : current.onRetryCount,
+                offRetryCount: offRetryCountElem ? Number(offRetryCountElem.value) : current.offRetryCount,
                 retryGapMinutes: retryGapElem ? Number(retryGapElem.value) : current.retryGapMinutes
             };
 
-            next.retryCount = Number.isFinite(next.retryCount) ? Math.max(1, Math.min(12, next.retryCount)) : current.retryCount;
+            next.onRetryCount = Number.isFinite(next.onRetryCount) ? Math.max(1, Math.min(12, next.onRetryCount)) : current.onRetryCount;
+            next.offRetryCount = Number.isFinite(next.offRetryCount) ? Math.max(1, Math.min(12, next.offRetryCount)) : current.offRetryCount;
             next.retryGapMinutes = Number.isFinite(next.retryGapMinutes) ? Math.max(1, Math.min(60, next.retryGapMinutes)) : current.retryGapMinutes;
             return next;
         }
@@ -953,7 +966,7 @@ q<!DOCTYPE html>
             const settings = readDashboardAlarmSettingsEditor();
             const ok = saveDashboardAlarmSettings(settings);
             if (ok) {
-                addLog("Dashboard Alarm Sender updated: enabled=" + settings.enabled + ", retries=" + settings.retryCount + ", gap=" + settings.retryGapMinutes + "m");
+                addLog("Dashboard Alarm Sender updated: enabled=" + settings.enabled + ", ON retries=" + settings.onRetryCount + ", OFF retries=" + settings.offRetryCount + ", gap=" + settings.retryGapMinutes + "m");
             }
             renderDashboardAlarmSettingsEditor();
         }
@@ -970,8 +983,7 @@ q<!DOCTYPE html>
             return id;
         }
 
-        function isScheduleTargetOnline() {
-            const targetMotorId = getScheduleTargetMotorId();
+        function isTargetOnlineByMotorId(targetMotorId) {
             if (targetMotorId > 0) {
                 const motor = motors.find(function(m) { return m.id === targetMotorId; });
                 return !!(motor && motor.deviceOnline);
@@ -979,44 +991,78 @@ q<!DOCTYPE html>
             return motors.some(function(m) { return m.deviceOnline; });
         }
 
-        function publishAlarmCommandWithRetry(command, sourceLabel) {
-            if (!isConnected || !client) {
-                addLog("Dashboard alarm skipped: MQTT disconnected");
-                return;
-            }
-
-            if (!isScheduleTargetOnline()) {
-                addLog("Dashboard alarm skipped: target device offline for " + command);
-                return;
-            }
-
+        function queueDashboardAlarmJob(command, sourceLabel) {
             const settings = loadDashboardAlarmSettings();
-            const topic = getScheduleTargetTopic();
-            const payload = command;
+            const targetMotorId = getScheduleTargetMotorId();
+            const retryCount = command === "OFF" ? settings.offRetryCount : settings.onRetryCount;
+            const gapMs = settings.retryGapMinutes * 60 * 1000;
+            const nowMs = Date.now();
+            const jobId = sourceLabel.replace(/\s+/g, "_") + "_" + command + "_" + nowMs;
 
-            for (let attempt = 1; attempt <= settings.retryCount; attempt++) {
-                const delayMs = (attempt - 1) * settings.retryGapMinutes * 60 * 1000;
-                const timerId = setTimeout(function() {
-                    if (!isConnected || !client) {
-                        addLog("Dashboard alarm attempt " + attempt + " skipped: MQTT disconnected");
-                        return;
-                    }
-                    if (!isScheduleTargetOnline()) {
-                        addLog("Dashboard alarm attempt " + attempt + " skipped: target offline");
-                        return;
-                    }
+            dashboardAlarmState.alarmJobs[jobId] = {
+                id: jobId,
+                command: command,
+                sourceLabel: sourceLabel,
+                topic: getScheduleTargetTopic(),
+                targetMotorId: targetMotorId,
+                retryCount: retryCount,
+                gapMs: gapMs,
+                attemptsSent: 0,
+                nextAttemptAtMs: nowMs,
+                expiresAtMs: nowMs + (retryCount * gapMs)
+            };
 
-                    client.publish(topic, payload, { qos: 1, retain: false }, function(err) {
-                        if (err) {
-                            addLog("Dashboard alarm " + command + " attempt " + attempt + " failed: " + err.message);
-                            return;
-                        }
-                        trackTx(topic, payload);
-                        addLog("Dashboard alarm " + sourceLabel + " -> " + command + " attempt " + attempt + "/" + settings.retryCount);
-                    });
-                }, delayMs);
-                dashboardAlarmState.pendingRetryTimers.push(timerId);
+            addLog("Dashboard alarm queued: " + sourceLabel + " " + command + " | tries=" + retryCount + " | gap=" + settings.retryGapMinutes + "m");
+        }
+
+        function processDashboardAlarmJobs() {
+            const nowMs = Date.now();
+            const jobIds = Object.keys(dashboardAlarmState.alarmJobs);
+            if (jobIds.length === 0) {
+                return;
             }
+
+            jobIds.forEach(function(jobId) {
+                const job = dashboardAlarmState.alarmJobs[jobId];
+                if (!job) {
+                    return;
+                }
+
+                if (job.attemptsSent >= job.retryCount || nowMs > job.expiresAtMs) {
+                    delete dashboardAlarmState.alarmJobs[jobId];
+                    return;
+                }
+
+                if (nowMs < job.nextAttemptAtMs) {
+                    return;
+                }
+
+                if (!isConnected || !client) {
+                    return;
+                }
+
+                if (!isTargetOnlineByMotorId(job.targetMotorId)) {
+                    return;
+                }
+
+                const nextAttemptNumber = job.attemptsSent + 1;
+                client.publish(job.topic, job.command, { qos: 1, retain: false }, function(err) {
+                    if (err) {
+                        addLog("Dashboard alarm " + job.command + " attempt " + nextAttemptNumber + " failed: " + err.message);
+                        return;
+                    }
+
+                    trackTx(job.topic, job.command);
+                    addLog("Dashboard alarm " + job.sourceLabel + " -> " + job.command + " attempt " + nextAttemptNumber + "/" + job.retryCount);
+                });
+
+                job.attemptsSent += 1;
+                job.nextAttemptAtMs = nowMs + job.gapMs;
+
+                if (job.attemptsSent >= job.retryCount) {
+                    delete dashboardAlarmState.alarmJobs[jobId];
+                }
+            });
         }
 
         function checkAndTriggerDashboardAlarm() {
@@ -1043,7 +1089,7 @@ q<!DOCTYPE html>
                     const onKey = dayKey + "|" + index + "|ON|" + hh + ":" + mm;
                     if (!dashboardAlarmState.lastTriggerKeyMap["ON_" + index] || dashboardAlarmState.lastTriggerKeyMap["ON_" + index] !== onKey) {
                         dashboardAlarmState.lastTriggerKeyMap["ON_" + index] = onKey;
-                        publishAlarmCommandWithRetry("ON", "alarm " + (index + 1) + " ON");
+                        queueDashboardAlarmJob("ON", "alarm " + (index + 1) + " ON");
                     }
                 }
 
@@ -1051,7 +1097,7 @@ q<!DOCTYPE html>
                     const offKey = dayKey + "|" + index + "|OFF|" + hh + ":" + mm;
                     if (!dashboardAlarmState.lastTriggerKeyMap["OFF_" + index] || dashboardAlarmState.lastTriggerKeyMap["OFF_" + index] !== offKey) {
                         dashboardAlarmState.lastTriggerKeyMap["OFF_" + index] = offKey;
-                        publishAlarmCommandWithRetry("OFF", "alarm " + (index + 1) + " OFF");
+                        queueDashboardAlarmJob("OFF", "alarm " + (index + 1) + " OFF");
                     }
                 }
             });
@@ -2639,6 +2685,9 @@ q<!DOCTYPE html>
             setInterval(function() {
                 checkAndTriggerDashboardAlarm();
             }, 15000);
+            setInterval(function() {
+                processDashboardAlarmJobs();
+            }, 5000);
             addLog("Motor Controller Device started.");
         };
     </script>
