@@ -875,10 +875,82 @@ q<!DOCTYPE html>
 
         const SCHEDULE_SLOTS = 3;
         const DASHBOARD_ALARM_SETTINGS_KEY = "relite_dashboard_alarm_settings";
+        const MANUAL_OFF_GUARD_KEY = "relite_manual_off_guard";
         const dashboardAlarmState = {
             lastTriggerKeyMap: {},
             alarmJobs: {}
         };
+
+        function loadManualOffGuardState() {
+            try {
+                const raw = localStorage.getItem(MANUAL_OFF_GUARD_KEY);
+                if (!raw) {
+                    return {};
+                }
+                const parsed = JSON.parse(raw);
+                return (parsed && typeof parsed === "object") ? parsed : {};
+            } catch (err) {
+                return {};
+            }
+        }
+
+        function saveManualOffGuardState(state) {
+            try {
+                localStorage.setItem(MANUAL_OFF_GUARD_KEY, JSON.stringify(state || {}));
+            } catch (err) {
+                // ignore storage failures and continue runtime behavior
+            }
+        }
+
+        function setManualOffGuard(targetMotorId, active) {
+            const guard = loadManualOffGuardState();
+            if (targetMotorId > 0) {
+                guard[String(targetMotorId)] = !!active;
+            } else {
+                guard.ALL = !!active;
+            }
+            saveManualOffGuardState(guard);
+        }
+
+        function isManualOffGuardActiveForTarget(targetMotorId) {
+            const guard = loadManualOffGuardState();
+            if (guard.ALL === true) {
+                return true;
+            }
+            if (targetMotorId > 0) {
+                return guard[String(targetMotorId)] === true;
+            }
+            const keys = Object.keys(guard);
+            return keys.some(function(k) {
+                return k !== "ALL" && guard[k] === true;
+            });
+        }
+
+        function clearManualOffGuardOnAutoMode(id) {
+            if (!id) {
+                return;
+            }
+            setManualOffGuard(id, false);
+        }
+
+        function cancelQueuedOffJobsForTarget(targetMotorId) {
+            const jobIds = Object.keys(dashboardAlarmState.alarmJobs);
+            jobIds.forEach(function(jobId) {
+                const job = dashboardAlarmState.alarmJobs[jobId];
+                if (!job || job.command !== "OFF") {
+                    return;
+                }
+
+                if (targetMotorId > 0) {
+                    if (job.targetMotorId === targetMotorId || job.targetMotorId === 0) {
+                        delete dashboardAlarmState.alarmJobs[jobId];
+                    }
+                    return;
+                }
+
+                delete dashboardAlarmState.alarmJobs[jobId];
+            });
+        }
 
         function defaultDashboardAlarmSettings() {
             return {
@@ -994,6 +1066,10 @@ q<!DOCTYPE html>
         function queueDashboardAlarmJob(command, sourceLabel) {
             const settings = loadDashboardAlarmSettings();
             const targetMotorId = getScheduleTargetMotorId();
+            if (command === "OFF" && isManualOffGuardActiveForTarget(targetMotorId)) {
+                addLog("Dashboard alarm OFF blocked by manual ON lock. Send manual OFF to clear lock.");
+                return;
+            }
             const retryCount = command === "OFF" ? settings.offRetryCount : settings.onRetryCount;
             const gapMs = settings.retryGapMinutes * 60 * 1000;
             const nowMs = Date.now();
@@ -1042,6 +1118,12 @@ q<!DOCTYPE html>
                 }
 
                 if (!isTargetOnlineByMotorId(job.targetMotorId)) {
+                    return;
+                }
+
+                if (job.command === "OFF" && isManualOffGuardActiveForTarget(job.targetMotorId)) {
+                    addLog("Dashboard alarm OFF skipped (manual ON lock active)");
+                    delete dashboardAlarmState.alarmJobs[jobId];
                     return;
                 }
 
@@ -2252,6 +2334,15 @@ q<!DOCTYPE html>
                     return;
                 }
 
+                if (turnOn) {
+                    setManualOffGuard(id, true);
+                    cancelQueuedOffJobsForTarget(id);
+                    addLog("Manual ON lock active for motor " + id + ". Scheduled OFF blocked until manual OFF.");
+                } else {
+                    setManualOffGuard(id, false);
+                    addLog("Manual ON lock cleared for motor " + id + ".");
+                }
+
                 trackTx(motor.controlTopic, command);
                 updateMotorFeedback(id, "Command sent, waiting for ESP32", "#1f7d48");
                 addLog("Motor " + id + " -> " + command + " on " + motor.controlTopic);
@@ -2279,6 +2370,10 @@ q<!DOCTYPE html>
                     return;
                 }
 
+                if (!manualMode) {
+                    clearManualOffGuardOnAutoMode(id);
+                }
+
                 trackTx(motor.controlTopic, command);
                 setMotorMode(id, command);
                 updateMotorFeedback(id, "Mode " + command + " set", "#1f7d48");
@@ -2298,6 +2393,18 @@ q<!DOCTYPE html>
                 if (err) {
                     addLog("All command failed: " + err.message);
                     return;
+                }
+
+                if (turnOn) {
+                    setManualOffGuard(0, true);
+                    cancelQueuedOffJobsForTarget(0);
+                    addLog("Manual ON lock active for ALL motors. Scheduled OFF blocked until manual OFF.");
+                } else {
+                    setManualOffGuard(0, false);
+                    motors.forEach(function(motor) {
+                        setManualOffGuard(motor.id, false);
+                    });
+                    addLog("Manual ON lock cleared for ALL motors.");
                 }
 
                 trackTx(topic, command);
