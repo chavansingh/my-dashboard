@@ -1532,6 +1532,21 @@
             return reasonLabel || (isOn ? "Status ON" : "Status OFF");
         }
 
+        function isAlarmOnReason(reason) {
+            const upper = String(reason || "").trim().toUpperCase();
+            return upper === "ALARM_ON" || upper === "ALARM ON";
+        }
+
+        function setMotorAlarmState(targetMotorId, active) {
+            motors.forEach(function(motor) {
+                if (targetMotorId > 0 && motor.id !== targetMotorId) {
+                    return;
+                }
+                motor.localAlarmActive = !!active;
+                renderMotorCard(motor);
+            });
+        }
+
         function pushMotorSwitchEvent(motor, isOn, source) {
             const nextState = isOn ? "ON" : "OFF";
             const now = Date.now();
@@ -2095,7 +2110,9 @@
                 switchEvents: loadMotorSwitchEvents(id),
                 manualTimerActive: false,
                 manualTimerRemainingSec: 0,
-                manualTimerDurationSec: 0
+                manualTimerDurationSec: 0,
+                localAlarmActive: false,
+                deviceAlarmActive: false
             };
         });
 
@@ -2362,12 +2379,15 @@
             const runningByCurrent = (typeof motor.motorRunningCurrent === "boolean")
                 ? motor.motorRunningCurrent
                 : (motor.current !== null && Number.isFinite(Number(motor.current)) && Number(motor.current) > Number(motor.motorOnCurrentThresholdA || 1.0));
-            statusChip.textContent = (runningByCurrent ? "STARTED" : "STOPPED") + " | D27 " + d27Label;
+            const alarmActive = !!motor.localAlarmActive || !!motor.deviceAlarmActive;
+            statusChip.textContent = alarmActive
+                ? (motor.state ? "ALARM ON" : "ALARM OFF") + " | D27 " + d27Label
+                : (runningByCurrent ? "STARTED" : "STOPPED") + " | D27 " + d27Label;
             if (motor.manualTimerActive && Number.isFinite(Number(motor.manualTimerRemainingSec)) && Number(motor.manualTimerRemainingSec) > 0) {
                 const leftMin = Math.max(1, Math.ceil(Number(motor.manualTimerRemainingSec) / 60));
                 statusChip.textContent += " | TIMER " + leftMin + "m";
             }
-            statusChip.className = (motor.state || motor.d27On === true || runningByCurrent) ? "motor-status-chip on" : "motor-status-chip";
+            statusChip.className = (motor.state || motor.d27On === true || runningByCurrent || alarmActive) ? "motor-status-chip on" : "motor-status-chip";
 
             const durationMin = Number(motor.manualTimerDurationSec) > 0 ? Math.round(Number(motor.manualTimerDurationSec) / 60) : 20;
             if (document.activeElement !== manualDurationSelect && MANUAL_ON_DURATION_OPTIONS.indexOf(durationMin) >= 0) {
@@ -2694,6 +2714,13 @@
             const sourceUpper = sourceText.trim().toUpperCase();
 
             motor.state = nextState;
+            if (!nextState) {
+                motor.deviceAlarmActive = false;
+            } else if (isAlarmOnReason(sourceText)) {
+                motor.deviceAlarmActive = true;
+            } else if (sourceUpper !== "STATUS" && sourceUpper !== "DASHBOARD") {
+                motor.deviceAlarmActive = false;
+            }
             if (previousState === nextState && sourceUpper !== "STATUS" && sourceUpper !== "DASHBOARD") {
                 updateMotorFeedback(id, getMotorFeedbackLabel(nextState, sourceText, true), "#1f7d48");
                 renderMotorCard(motor);
