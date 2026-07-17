@@ -1470,8 +1470,12 @@
                 "UB_TRIP": "UB TRIP",
                 "OL_TRIP": "OVERLOAD TRIP",
                 "SEQ_TRIP": "SEQ TRIP",
-                "ALARM_ON": "ALARM ON",
-                "ALARM_OFF": "ALARM OFF",
+                "ALARM_ON": "E_alarm",
+                "ALARM_OFF": "E_alarm OFF",
+                "E_ALARM_ON": "E_alarm",
+                "E_ALARM_OFF": "E_alarm OFF",
+                "D_ALARM_ON": "d_alarm",
+                "D_ALARM_OFF": "d_alarm OFF",
                 "AUTO_ON": "AUTO ON",
                 "TRIP_ERROR_CURRENT_NOT_ZERO": "TRIP ERROR",
                 "AUTO_LOW_VOLTAGE": "LOW VOLTAGE TRIP",
@@ -1534,7 +1538,7 @@
 
         function isAlarmOnReason(reason) {
             const upper = String(reason || "").trim().toUpperCase();
-            return upper === "ALARM_ON" || upper === "ALARM ON" || upper === "ALARM";
+            return upper === "ALARM_ON" || upper === "ALARM ON" || upper === "ALARM" || upper === "E_ALARM_ON" || upper === "D_ALARM_ON";
         }
 
         function setMotorAlarmState(targetMotorId, active) {
@@ -2380,7 +2384,7 @@
                 ? motor.motorRunningCurrent
                 : (motor.current !== null && Number.isFinite(Number(motor.current)) && Number(motor.current) > Number(motor.motorOnCurrentThresholdA || 1.0));
             const alarmActive = !!motor.localAlarmActive || !!motor.deviceAlarmActive;
-            const alarmLabel = motor.deviceAlarmActive && !motor.localAlarmActive ? "E_alarm" : "ALARM ON";
+            const alarmLabel = motor.deviceAlarmActive && !motor.localAlarmActive ? "E_alarm" : "d_alarm";
             statusChip.textContent = alarmActive
                 ? (motor.state ? alarmLabel : "ALARM OFF") + " | D27 " + d27Label
                 : (runningByCurrent ? "STARTED" : "STOPPED") + " | D27 " + d27Label;
@@ -3794,12 +3798,12 @@
                         if (typeof payload.alarm_state !== "undefined" && String(payload.alarm_state).trim().length > 0) {
                             latestReasonSource = String(payload.alarm_state);
                         } else if (typeof payload.alarm_active !== "undefined" && readBooleanField(payload.alarm_active) && state) {
-                            latestReasonSource = "ALARM_ON";
+                            latestReasonSource = "E_ALARM_ON";
                         }
                         if (typeof payload.alarm_state !== "undefined" && String(payload.alarm_state).trim().length > 0) {
                             latestReasonSource = String(payload.alarm_state);
                         } else if (typeof payload.alarm_active !== "undefined" && readBooleanField(payload.alarm_active) && state) {
-                            latestReasonSource = "ALARM_ON";
+                            latestReasonSource = "E_ALARM_ON";
                         }
                         if (!state) {
                             if (dryRunActive === true) {
