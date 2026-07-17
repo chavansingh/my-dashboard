@@ -1761,10 +1761,37 @@
 
         function defaultScheduleConfig() {
             return [
-                { enabled: true, on_hour: 6, on_minute: 0, duration_min: 60, off_hour: 7, off_minute: 0 },
-                { enabled: true, on_hour: 12, on_minute: 0, duration_min: 60, off_hour: 13, off_minute: 0 },
-                { enabled: true, on_hour: 18, on_minute: 0, duration_min: 60, off_hour: 19, off_minute: 0 }
+                { enabled: true, on_hour: 6, on_minute: 0, duration_min: 180, off_hour: 9, off_minute: 0 },
+                { enabled: true, on_hour: 17, on_minute: 50, duration_min: 60, off_hour: 18, off_minute: 50 },
+                { enabled: true, on_hour: 16, on_minute: 40, duration_min: 60, off_hour: 17, off_minute: 40 }
             ];
+        }
+
+        function isLegacyDefaultSchedule(schedule) {
+            if (!Array.isArray(schedule) || schedule.length !== SCHEDULE_SLOTS) {
+                return false;
+            }
+
+            const expected = [
+                { enabled: true, on_hour: 6, on_minute: 0, duration_min: 60 },
+                { enabled: true, on_hour: 12, on_minute: 0, duration_min: 60 },
+                { enabled: true, on_hour: 18, on_minute: 0, duration_min: 60 }
+            ];
+
+            for (let index = 0; index < SCHEDULE_SLOTS; index++) {
+                const current = schedule[index] || {};
+                const target = expected[index];
+                if (
+                    current.enabled !== target.enabled ||
+                    Number(current.on_hour) !== target.on_hour ||
+                    Number(current.on_minute) !== target.on_minute ||
+                    Number(current.duration_min) !== target.duration_min
+                ) {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         function loadScheduleConfig() {
@@ -1777,7 +1804,7 @@
                 if (!Array.isArray(parsed) || parsed.length !== SCHEDULE_SLOTS) {
                     return defaultScheduleConfig();
                 }
-                return parsed.map(function(item, index) {
+                const normalized = parsed.map(function(item, index) {
                     const onHour = Number.isFinite(Number(item.on_hour)) ? Math.max(0, Math.min(23, Number(item.on_hour))) : (Number.isFinite(Number(item.hour)) ? Math.max(0, Math.min(23, Number(item.hour))) : defaultScheduleConfig()[index].on_hour);
                     const onMinute = Number.isFinite(Number(item.on_minute)) ? Math.max(0, Math.min(59, Number(item.on_minute))) : (Number.isFinite(Number(item.minute)) ? Math.max(0, Math.min(59, Number(item.minute))) : defaultScheduleConfig()[index].on_minute);
                     const durationMin = deriveScheduleDurationMinutes(item, index);
@@ -1791,6 +1818,18 @@
                         off_minute: endTime.off_minute
                     };
                 });
+
+                if (isLegacyDefaultSchedule(normalized)) {
+                    const requestedDefault = defaultScheduleConfig();
+                    try {
+                        localStorage.setItem("relite2_schedule_config", JSON.stringify(requestedDefault));
+                    } catch (err) {
+                        // ignore local storage failures
+                    }
+                    return requestedDefault;
+                }
+
+                return normalized;
             } catch (err) {
                 return defaultScheduleConfig();
             }
@@ -1862,12 +1901,13 @@
         function readScheduleEditor() {
             const schedule = [];
             for (let index = 0; index < SCHEDULE_SLOTS; index++) {
+                const defaults = defaultScheduleConfig()[index];
                 const onTimeElem = document.getElementById("schedule-on-time-" + index);
                 const durationElem = document.getElementById("schedule-duration-" + index);
                 const enabledElem = document.getElementById("schedule-enabled-" + index);
-                let onHour = 6;
-                let onMinute = 0;
-                let durationMin = 60;
+                let onHour = defaults.on_hour;
+                let onMinute = defaults.on_minute;
+                let durationMin = defaults.duration_min;
                 if (onTimeElem && onTimeElem.value) {
                     const parts = onTimeElem.value.split(":");
                     if (parts.length === 2) {
