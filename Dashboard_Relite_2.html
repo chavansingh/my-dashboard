@@ -1011,6 +1011,16 @@
             text-align: center;
         }
 
+        .e-alarm-time-label {
+            font-size: 11px;
+            font-weight: 700;
+            color: #35506f;
+            background: #e8edf4;
+            border-radius: 7px;
+            padding: 4px 8px;
+            text-align: center;
+        }
+
         .motor-feedback {
             margin-top: 8px;
             font-size: 12px;
@@ -1579,6 +1589,34 @@
         function isDashboardAlarmOffReason(reason) {
             const upper = String(reason || "").trim().toUpperCase();
             return upper === "D_ALARM_OFF" || upper === "D_ALARM OFF";
+        }
+
+        function isEAlarmDisplayReason(reason) {
+            const upper = String(reason || "").trim().toUpperCase();
+            return upper === "ALARM_ON" ||
+                upper === "ALARM ON" ||
+                upper === "E_ALARM" ||
+                upper === "E ALARM" ||
+                upper === "E_ALARM_ON" ||
+                upper === "E ALARM ON";
+        }
+
+        function findLatestEAlarmOnTimestamp(motor) {
+            if (!motor || !Array.isArray(motor.switchEvents)) {
+                return 0;
+            }
+
+            for (let i = 0; i < motor.switchEvents.length; i++) {
+                const item = motor.switchEvents[i] || {};
+                const stateUpper = String(item.state || "").trim().toUpperCase();
+                const reasonText = String(item.reason || item.source || "");
+                const ts = Number(item.timestamp || 0);
+                if (stateUpper === "ON" && isEAlarmDisplayReason(reasonText) && Number.isFinite(ts) && ts > 0) {
+                    return ts;
+                }
+            }
+
+            return 0;
         }
 
         function setMotorAlarmState(targetMotorId, active) {
@@ -2250,7 +2288,8 @@
                 manualTimerDurationSec: 0,
                 dashboardAlarmEnabled: loadMotorDashboardAlarmEnabled(id),
                 localAlarmActive: false,
-                deviceAlarmActive: false
+                deviceAlarmActive: false,
+                eAlarmOnAtMs: null
             };
         });
 
@@ -2528,8 +2567,9 @@
             const deviceLastSeen = document.getElementById("motor-device-last-" + motor.id);
             const manualDurationSelect = document.getElementById("motor-manual-duration-" + motor.id);
             const manualTimerLabel = document.getElementById("motor-manual-timer-label-" + motor.id);
+            const eAlarmTimeLabel = document.getElementById("motor-ealarm-time-" + motor.id);
 
-            if (!card || !badge || !motorNameText || !relayNameText || !runtimeText || !statusChip || !ignoreFaultLowVoltageBtn || !ignoreFaultUnbalanceBtn || !ignoreFaultPhaseBtn || !ignoreFaultDryRunBtn || !ignoreFaultCurrentBtn || !buttonMode || !voltageValue || !voltageAlertChip || !unbalanceAlertChip || !lowVoltageInput || !unbalanceInput || !phaseSequenceChip || !phaseSelect || !voltageProtectionBtn || !last4Inline || !currentValue || !dryRunInput || !overloadInput || !dryRunChip || !overloadChip || !currentProtectionBtn || !dashboardAlarmBtn || !deviceState || !deviceLastSeen || !manualDurationSelect || !manualTimerLabel) {
+            if (!card || !badge || !motorNameText || !relayNameText || !runtimeText || !statusChip || !ignoreFaultLowVoltageBtn || !ignoreFaultUnbalanceBtn || !ignoreFaultPhaseBtn || !ignoreFaultDryRunBtn || !ignoreFaultCurrentBtn || !buttonMode || !voltageValue || !voltageAlertChip || !unbalanceAlertChip || !lowVoltageInput || !unbalanceInput || !phaseSequenceChip || !phaseSelect || !voltageProtectionBtn || !last4Inline || !currentValue || !dryRunInput || !overloadInput || !dryRunChip || !overloadChip || !currentProtectionBtn || !dashboardAlarmBtn || !deviceState || !deviceLastSeen || !manualDurationSelect || !manualTimerLabel || !eAlarmTimeLabel) {
                 return;
             }
 
@@ -2569,6 +2609,17 @@
             } else {
                 manualTimerLabel.textContent = "TIMER INACTIVE";
                 manualTimerLabel.style.color = "#35506f";
+            }
+
+            if (motor.deviceAlarmActive) {
+                const alarmOnMs = Number(motor.eAlarmOnAtMs || findLatestEAlarmOnTimestamp(motor));
+                eAlarmTimeLabel.textContent = "E ALARM ON TIME: " + (alarmOnMs > 0 ? formatSwitchTimestamp(alarmOnMs) : "--");
+                eAlarmTimeLabel.style.color = "#9b2d2d";
+                eAlarmTimeLabel.style.background = "#fbe6e6";
+            } else {
+                eAlarmTimeLabel.textContent = "E ALARM ON TIME: --";
+                eAlarmTimeLabel.style.color = "#35506f";
+                eAlarmTimeLabel.style.background = "#e8edf4";
             }
 
             dashboardAlarmBtn.textContent = motor.dashboardAlarmEnabled ? "D-ALARM ON" : "D-ALARM OFF";
@@ -2958,11 +3009,16 @@
             if (!nextState) {
                 motor.deviceAlarmActive = false;
                 motor.localAlarmActive = false;
+                motor.eAlarmOnAtMs = null;
             } else {
                 if (isDeviceAlarmOnReason(sourceText)) {
                     motor.deviceAlarmActive = true;
+                    if (!Number.isFinite(Number(motor.eAlarmOnAtMs)) || Number(motor.eAlarmOnAtMs) <= 0) {
+                        motor.eAlarmOnAtMs = Date.now();
+                    }
                 } else if (isDeviceAlarmOffReason(sourceText)) {
                     motor.deviceAlarmActive = false;
+                    motor.eAlarmOnAtMs = null;
                 }
 
                 if (isDashboardAlarmOnReason(sourceText)) {
@@ -3164,6 +3220,10 @@
                 }
 
                 motor.switchEvents = incomingEvents;
+                const latestEAlarmOnTs = findLatestEAlarmOnTimestamp(motor);
+                if (latestEAlarmOnTs > 0 && motor.deviceAlarmActive) {
+                    motor.eAlarmOnAtMs = latestEAlarmOnTs;
+                }
                 motor.switchHistorySyncedAt = Date.now();
                 saveMotorSwitchEvents(motor);
             }
@@ -3781,6 +3841,7 @@
                 html += "<button class=\"motor-btn motor-btn-off\" id=\"motor-btn-off-" + motor.id + "\" onclick=\"sendMotorCommand(" + motor.id + ", false)\">OFF</button>";
                 html += "<button class=\"fault-ignore-btn\" id=\"motor-dashboard-alarm-btn-" + motor.id + "\" onclick=\"toggleDashboardAlarmEnabled(" + motor.id + ")\">D-ALARM ON</button>";
                 html += "<div class=\"manual-timer-label\" id=\"motor-manual-timer-label-" + motor.id + "\">TIMER INACTIVE</div>";
+                html += "<div class=\"e-alarm-time-label\" id=\"motor-ealarm-time-" + motor.id + "\">E ALARM ON TIME: --</div>";
                 html += "</div>";
                 html += "</div>";
                 html += "<div class=\"motor-right-params\">";
