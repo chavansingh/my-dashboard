@@ -1534,7 +1534,7 @@
 
         function isAlarmOnReason(reason) {
             const upper = String(reason || "").trim().toUpperCase();
-            return upper === "ALARM_ON" || upper === "ALARM ON";
+            return upper === "ALARM_ON" || upper === "ALARM ON" || upper === "ALARM";
         }
 
         function setMotorAlarmState(targetMotorId, active) {
